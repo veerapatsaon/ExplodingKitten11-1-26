@@ -3,7 +3,7 @@ const params = new URLSearchParams(location.search);
 const room = params.get("code");
 const clientId = params.get("clientId") || localStorage.getItem("clientId");
 const playerName = sessionStorage.getItem("playerName") || "ผู้เล่นไร้นาม";
-
+let privateLogs = []; // เอาไว้เก็บ Log จั่วไพ่ของเราเอง
 // ตรวจสอบข้อมูลเบื้องต้น
 if (!room || !clientId) {
     alert("ข้อมูลไม่ครบถ้วน กำลังกลับหน้าหลัก...");
@@ -37,6 +37,12 @@ const elements = {
 /* ===== MAIN STATE LISTENER ===== */
 socket.on("drawSuccess", (data) => {
     console.log("ได้รับ Event drawSuccess:", data.card); // ตรวจสอบใน F12 Console
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    privateLogs.push({
+        text: `<strong style="color:#3498db;">[จั่วไพ่]</strong> คุณได้รับ: <strong>${data.card}</strong>`,
+        time: time,
+        kind: 'private' // กำหนดประเภทให้รู้ว่าเป็นสีฟ้า
+    });
     
     const logEl = document.getElementById("gameLog");
     if (logEl) {
@@ -101,19 +107,32 @@ const playersList = document.getElementById("players");
 })
 
     // 2. แสดง Log เกม (ต้องอยู่ภายในนี้เพื่อให้รู้จัก roomState)
-    if (logEl && roomState.logs) {
-        logEl.innerHTML = ""; 
-        // ใช้ .slice(-10) เพื่อเอาเฉพาะ 10 ข้อมูลล่าสุดจาก Array
-    const latestLogs = roomState.logs.slice(-8); 
+   if (logEl && roomState.logs) {
+    logEl.innerHTML = ""; 
+
+    // 1. นำ Log จาก Server มารวมกับ Log ส่วนตัวของเรา
+    // เราจะเรียงตามเวลา หรือจะเอา Log ส่วนตัวไปต่อท้ายก็ได้
+    const allLogs = [...roomState.logs, ...privateLogs];
+
+    // 2. แสดงเฉพาะ 10-15 รายการล่าสุด (เพื่อไม่ให้ล้นหน้าจอ)
+    const latestLogs = allLogs.slice(-8); 
     
     latestLogs.forEach(l => {
         const div = document.createElement("div");
+        // ถ้าเป็นประเภท private ให้ใส่สไตล์สีฟ้า
+        const isPrivate = l.kind === 'private';
+        
         div.className = `log log-${l.kind || 'system'}`;
+        if (isPrivate) {
+            div.style.cssText = "background: rgba(52, 152, 219, 0.15); border-left: 4px solid #3498db; padding: 4px 8px;";
+        }
+
         div.innerHTML = `<small style="color:gray;">${l.time || ''}</small> ${l.text}`;
         logEl.appendChild(div);
     });
-        logEl.scrollTop = logEl.scrollHeight;
-    }
+    
+    logEl.scrollTop = logEl.scrollHeight;
+}
 
     // 3. จัดการปุ่ม Start สำหรับ Host
     const isHost = roomState.hostClientId === clientId;
