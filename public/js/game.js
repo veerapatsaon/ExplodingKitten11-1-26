@@ -4,6 +4,7 @@ const room = params.get("code");
 const clientId = params.get("clientId") || localStorage.getItem("clientId");
 const playerName = sessionStorage.getItem("playerName") || "ผู้เล่นไร้นาม";
 let privateLogs = []; // เอาไว้เก็บ Log จั่วไพ่ของเราเอง
+let latestLocalLog = null;
 // ตรวจสอบข้อมูลเบื้องต้น
 if (!room || !clientId) {
     alert("ข้อมูลไม่ครบถ้วน กำลังกลับหน้าหลัก...");
@@ -37,7 +38,15 @@ const elements = {
 /* ===== MAIN STATE LISTENER ===== */
 socket.on("drawSuccess", (data) => {
     console.log("ได้รับ Event drawSuccess:", data.card); // ตรวจสอบใน F12 Console
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const now = new Date();
+    const time = now.getHours().toString().padStart(2, '0') + ":" + 
+                 now.getMinutes().toString().padStart(2, '0') + ":" + 
+                 now.getSeconds().toString().padStart(2, '0');
+   latestLocalLog = {
+        text: `<strong style="color:#3498db;">[จั่วไพ่]</strong> คุณได้รับ: <strong>${data.card}</strong>`,
+        time: time,
+        kind: 'private'
+    }
     privateLogs.push({
         text: `<strong style="color:#3498db;">[จั่วไพ่]</strong> คุณได้รับ: <strong>${data.card}</strong>`,
         time: time,
@@ -107,30 +116,46 @@ const playersList = document.getElementById("players");
 })
 
     // 2. แสดง Log เกม (ต้องอยู่ภายในนี้เพื่อให้รู้จัก roomState)
-   if (logEl && roomState.logs) {
-    logEl.innerHTML = ""; 
+ if (logEl && roomState.logs) {
+    logEl.innerHTML = ""; // ล้างหน้าจอ
 
-    // 1. นำ Log จาก Server มารวมกับ Log ส่วนตัวของเรา
-    // เราจะเรียงตามเวลา หรือจะเอา Log ส่วนตัวไปต่อท้ายก็ได้
-    const allLogs = [...roomState.logs, ...privateLogs];
-
-    // 2. แสดงเฉพาะ 10-15 รายการล่าสุด (เพื่อไม่ให้ล้นหน้าจอ)
-    const latestLogs = allLogs.slice(-8); 
-    
-    latestLogs.forEach(l => {
+    // 1. วาด Log จาก Server (จำกัด 9 บรรทัดล่าสุด)
+    const serverLogs = roomState.logs.slice(-9); 
+    serverLogs.forEach(l => {
         const div = document.createElement("div");
-        // ถ้าเป็นประเภท private ให้ใส่สไตล์สีฟ้า
-        const isPrivate = l.kind === 'private';
         
         div.className = `log log-${l.kind || 'system'}`;
-        if (isPrivate) {
-            div.style.cssText = "background: rgba(52, 152, 219, 0.15); border-left: 4px solid #3498db; padding: 4px 8px;";
-        }
+        // 🚩 นำค่า l.kind ที่ส่งมาจาก pushLog มาสร้าง class
+    const logType = l.kind || 'system'; 
+    div.className = `log log-${logType}`; 
 
-        div.innerHTML = `<small style="color:gray;">${l.time || ''}</small> ${l.text}`;
-        logEl.appendChild(div);
-    });
-    
+    let displayText = l.text;
+
+    if (displayText.includes("แมว") && (displayText.includes("x2") || displayText.includes("x3"))) {
+        if (displayText.includes("x2")) {
+            displayText = displayText.replace(/แมว[ก-ฮa-zA-Z]*\s*x2/g, "Combo แมว 2 ใบ");
+        } else {
+            displayText = displayText.replace(/แมว[ก-ฮa-zA-Z]*\s*x3/g, "Combo แมว 3 ใบ");
+        }
+    }
+
+    div.innerHTML = `<small style="color:gray;">${l.time || ''}</small> ${displayText}`;
+    logEl.appendChild(div);
+});
+
+    // 2. วาด Local Log (จั่วไพ่ล่าสุดของคุณ) เพียงบรรทัดเดียว
+    if (latestLocalLog) {
+        const pDiv = document.createElement("div");
+        pDiv.className = "log log-private";
+        // ใส่สีฟ้าจางๆ เพื่อให้แยกออกว่าเป็น Log ส่วนตัว
+        pDiv.style.cssText = "background: rgba(52, 152, 219, 0.1); border-left: 3px solid #3498db; padding: 2px 8px; margin-top: 2px; border-radius: 4px;";
+        
+        // รูปแบบเวลาจะออกมาเป็น 13:09:37 ตามที่ตั้งค่าไว้
+        pDiv.innerHTML = `<small style="color:gray;">${latestLocalLog.time}</small> ${latestLocalLog.text}`;
+        logEl.appendChild(pDiv);
+    }
+
+    // เลื่อนลงล่างสุดอัตโนมัติ
     logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -229,34 +254,42 @@ if (displayCardName === "COMBO_2" || displayCardName.startsWith("แมว")) {
         
 const updateTimer = () => {
     const now = Date.now();
-    const timeLeft = action.endAt - now;
+    const timeLeft = action.endAt - now; // เวลาที่เหลือจริง (มิลลิวินาที)
     
-    // 1. คำนวณเป็นวินาที (ใช้ Math.ceil เพื่อให้เริ่มที่ 7 แล้วจบที่ 1)
+    // 1. คำนวณวินาทีให้แม่นยำ
     let secondsContent = Math.ceil(timeLeft / 1000);
     if (secondsContent < 0) secondsContent = 0;
 
-    // 2. แสดงผลตัวเลข
+    // 🚩 ป้องกันเลขโดดไป 50: ถ้าวินาทีมากกว่า 10 (ซึ่งผิดปกติสำหรับ Nope) ให้แสดงแค่ 5 หรือตามจริง
+    // แต่ทางที่ดีที่สุดคือใช้ Math.min หรือเช็ค timeLeft
     timerNumber.innerText = secondsContent;
 
-    // 3. เพิ่มลูกเล่น: ถ้าเหลือน้อยกว่า 3 วิ ให้เปลี่ยนเป็นสีแดงเข้ม
-    if (secondsContent <= 2) {
-        timerNumber.classList.add("low-time");
-    } else {
-        timerNumber.classList.remove("low-time");
-    }
-
-    // --- ส่วนของหลอดเวลาเดิม ---
-    let percent = (timeLeft / 5000) * 100;
+    // 2. คำนวณหลอดเวลา (Progress Bar)
+    // action.duration ควรส่งมาจาก Server (เช่น 5000) 
+    // ถ้าไม่มี ให้ใช้ค่ามาตรฐานที่ระบบตั้งไว้ เช่น 5000 หรือ 7000
+    const totalDuration = action.duration || 5000; 
+    let percent = (timeLeft / totalDuration) * 100;
+    
     if (percent > 100) percent = 100;
     if (percent < 0) percent = 0;
     timerBar.style.width = percent + "%";
 
+    // 3. เปลี่ยนสีเมื่อเหลือน้อย (Animation)
+    if (secondsContent <= 2) {
+        timerNumber.style.color = "#ff4757";
+        timerNumber.classList.add("pulse-fast");
+    } else {
+        timerNumber.style.color = "white";
+        timerNumber.classList.remove("pulse-fast");
+    }
+
     if (timeLeft <= 0) {
         clearInterval(nopeInterval);
-    }
+        nopeOverlay.classList.add("hidden"); // ปิด Overlay ทันทีเมื่อหมดเวลา
     nopeBtn.disabled = false;
     nopeBtn.innerText = "❌ ม่าย (NOPE)";
-};
+}
+}
         // เรียกทำงานทันที 1 ครั้ง และตั้ง Loop ให้ทำทุก 50ms เพื่อความลื่น
         updateTimer();
         nopeInterval = setInterval(updateTimer, 50);
