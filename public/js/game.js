@@ -5,36 +5,32 @@ const clientId = params.get("clientId") || localStorage.getItem("clientId");
 const playerName = sessionStorage.getItem("playerName") || "ผู้เล่นไร้นาม";
 let privateLogs = []; // เอาไว้เก็บ Log จั่วไพ่ของเราเอง
 let latestLocalLog = null;
+let localTimeLeft = 0;
+let localTimerInterval = null;
+let lastCardCount = 0;
+let lastState = null;
 // ตรวจสอบข้อมูลเบื้องต้น
 if (!room || !clientId) {
     alert("ข้อมูลไม่ครบถ้วน กำลังกลับหน้าหลัก...");
     location.href = "/";
 }
-
 // ส่งสัญญาณเข้าร่วมห้อง
 socket.emit("joinRoom", { code: room, name: playerName, clientId: clientId });
-
-let lastState = null;
 let selectedCardsIdx = [];
 let myLocalHand = []; // เก็บชื่อการ์ดตามลำดับที่เราจัดไว้
-
 /* ===== DOM ELEMENTS ===== */
 const roomCodeEl = document.getElementById("roomCode");
 const playersEl = document.getElementById("players");
-const startBtn = document.getElementById("startGame");
+const resetBtn = document.getElementById("resetBtn");
 const drawBtn = document.getElementById("draw");
 const handEl = document.getElementById("hand");
 const deckEl = document.getElementById("deckCount");
 const logEl = document.getElementById("gameLog");
-
 const elements = {
     confirmPlay: document.getElementById("confirmPlay"),
     drawBtn: document.getElementById("draw"),
     nopeBtn: document.getElementById("nopeBtn")
 };
-
-    let nopeInterval = null; // สร้างตัวแปรไว้นอก function เพื่อคุม Loop
-    let lastCardCount = 0; // เก็บจำนวนไพ่ครั้งล่าสุด
 /* ===== MAIN STATE LISTENER ===== */
 socket.on("drawSuccess", (data) => {
     console.log("ได้รับ Event drawSuccess:", data.card); // ตรวจสอบใน F12 Console
@@ -64,261 +60,193 @@ socket.on("drawSuccess", (data) => {
         logEl.scrollTop = logEl.scrollHeight;
     }
 });
-
 socket.on("state", (roomState) => {
     if (!roomState) return;
-    lastState = roomState; // อัปเดตข้อมูลล่าสุด
-    // เพิ่มตรงนี้: ถ้าเราเคยสั่ง Sort ไว้ ให้ Sort ทุกครั้งที่ได้รับ State ใหม่
+    console.log("State Action:", roomState.pendingAction);
+
+    lastState = roomState;
     const me = roomState.players.find(p => p.clientId === clientId);
+    // 🚩 1. ประกาศตัวแปรที่จำเป็นต้องใช้ก่อน (Initialization)
+    const isHost = roomState.hostClientId === clientId; 
+    const isMyTurn = roomState.players[roomState.turn]?.clientId === clientId;
+
+    // 1. จัดการข้อมูลไพ่บนมือและการ Sort
     if (me && me.hand) {
-        // ถ้าจำนวนไพ่เพิ่มขึ้น และเป็นตาของเรา (แสดงว่าเพิ่งจั่ว)
         if (me.hand.length > lastCardCount && roomState.players[roomState.turn].clientId === clientId) {
-            // เนื่องจากคุณ Sort ตลอดเวลา เราหาไม่ได้ว่าใบไหนคือใบใหม่ 
-            // จึงทำได้แค่แจ้งว่าจำนวนไพ่เพิ่มขึ้น หรือถ้าไม่ Sort จะหาใบที่เพิ่มมาได้ครับ
             addLocalLog(`จั่วไพ่ใหม่สำเร็จ (มีไพ่ทั้งหมด ${me.hand.length} ใบ)`, 'info');
         }
         lastCardCount = me.hand.length;
-        
-        // เรียงไพ่ตามที่คุณต้องการ
         me.hand.sort((a, b) => a.localeCompare(b, 'th'));
     }
+
+    // 2. แสดงข้อมูลห้องและรายชื่อผู้เล่น
     roomCodeEl.innerText = "รหัสห้อง: " + (roomState.code || room);
-const playersList = document.getElementById("players");
-    if (!playersList) return;
+    const playersList = document.getElementById("players");
+    if (playersList) {
+        playersList.innerHTML = "";
 
-    playersList.innerHTML = ""; // ล้างข้อมูลเก่าทิ้งก่อนวาดใหม่
+        roomState.players.forEach((p, index) => {
+    const isCurrentTurn = roomState.turn === index;
+    const playerDiv = document.createElement("div");
+    playerDiv.className = `player-item ${isCurrentTurn ? 'active-turn' : ''} ${!p.alive ? 'player-dead' : ''}`;
+    
+    // 🚩 ตรวจสอบสิทธิ์ Host (เพิ่มตรงนี้เพื่อให้มีปุ่มเตะ)
+    const showKickBtn = isHost && p.clientId !== clientId;
 
-    roomState.players.forEach((p, index) => {
-        const isCurrentTurn = roomState.turn === index;
-        const playerDiv = document.createElement("div");
-        
-        // ใส่ Class เพื่อความสวยงาม (ตาปัจจุบัน, ตายแล้ว)
-        playerDiv.className = `player-item ${isCurrentTurn ? 'active-turn' : ''} ${!p.alive ? 'player-dead' : ''}`;
-        
-        // ดึงจำนวนการ์ด: ถ้าเป็นตัวเราใช้ p.hand.length ถ้าเป็นคนอื่นใน server.js ส่งมาเป็น array ของ "hidden" ก็ใช้ .length ได้เหมือนกัน
-        const cardCount = p.hand ? p.hand.length : 0;
-
-        playerDiv.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                <span>
-                    ${isCurrentTurn ? "👉 " : ""}
-                    <strong>${p.name}</strong> ${p.clientId === clientId ? "(คุณ)" : ""}
-                </span>
-                <span>
-                    ${p.alive 
-                        ? `<span class="badge-cards">🂠 ${cardCount} ใบ</span>` 
-                        : `<span style="color: red;">💀 ระเบิดแล้ว</span>`}
-                </span>
-            </div>
-        `;
-        
-        playersList.appendChild(playerDiv);
-})
-
-    // 2. แสดง Log เกม (ต้องอยู่ภายในนี้เพื่อให้รู้จัก roomState)
- if (logEl && roomState.logs) {
-    logEl.innerHTML = ""; // ล้างหน้าจอ
-
-    // 1. วาด Log จาก Server (จำกัด 9 บรรทัดล่าสุด)
-    const serverLogs = roomState.logs.slice(-9); 
-    serverLogs.forEach(l => {
-        const div = document.createElement("div");
-        
-        div.className = `log log-${l.kind || 'system'}`;
-        // 🚩 นำค่า l.kind ที่ส่งมาจาก pushLog มาสร้าง class
-    const logType = l.kind || 'system'; 
-    div.className = `log log-${logType}`; 
-
-    let displayText = l.text;
-
-    if (displayText.includes("แมว") && (displayText.includes("x2") || displayText.includes("x3"))) {
-        if (displayText.includes("x2")) {
-            displayText = displayText.replace(/แมว[ก-ฮa-zA-Z]*\s*x2/g, "Combo แมว 2 ใบ");
-        } else {
-            displayText = displayText.replace(/แมว[ก-ฮa-zA-Z]*\s*x3/g, "Combo แมว 3 ใบ");
-        }
-    }
-
-    div.innerHTML = `<small style="color:gray;">${l.time || ''}</small> ${displayText}`;
-    logEl.appendChild(div);
+    const cardCount = p.hand ? p.hand.length : 0;
+    playerDiv.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <span>
+                ${isCurrentTurn ? "👉 " : ""}
+                <strong>${p.name}</strong> ${p.clientId === clientId ? "(คุณ)" : ""}
+                ${p.clientId === roomState.hostClientId ? "👑" : ""}
+            </span>
+            <span>
+                ${p.alive ? `<span class="badge-cards">🂠 ${cardCount} ใบ</span>` : `<span style="color: red;">💀</span>`}
+                ${showKickBtn ? `<button onclick="kickPlayer('${p.clientId}')" style="margin-left:8px; background:#ff4757; color:white; border:none; padding:2px 5px; cursor:pointer; border-radius:3px;">เตะ</button>` : ""}
+            </span>
+        </div>`;
+    playersList.appendChild(playerDiv);
 });
-
-    // 2. วาด Local Log (จั่วไพ่ล่าสุดของคุณ) เพียงบรรทัดเดียว
-    if (latestLocalLog) {
-        const pDiv = document.createElement("div");
-        pDiv.className = "log log-private";
-        // ใส่สีฟ้าจางๆ เพื่อให้แยกออกว่าเป็น Log ส่วนตัว
-        pDiv.style.cssText = "background: rgba(52, 152, 219, 0.1); border-left: 3px solid #3498db; padding: 2px 8px; margin-top: 2px; border-radius: 4px;";
-        
-        // รูปแบบเวลาจะออกมาเป็น 13:09:37 ตามที่ตั้งค่าไว้
-        pDiv.innerHTML = `<small style="color:gray;">${latestLocalLog.time}</small> ${latestLocalLog.text}`;
-        logEl.appendChild(pDiv);
     }
+    if (logEl && roomState.logs) {
+        logEl.innerHTML = "";
+        const serverLogs = roomState.logs.slice(-9);
+        serverLogs.forEach(l => {
+            const div = document.createElement("div");
+            const logType = l.kind || 'system';
+            div.className = `log log-${logType}`;
+            let displayText = l.text;
+            if (displayText.includes("แมว") && (displayText.includes("x2") || displayText.includes("x3"))) {
+                displayText = displayText.replace(/แมว[ก-ฮa-zA-Z]*\s*x2/g, "Combo แมว 2 ใบ").replace(/แมว[ก-ฮa-zA-Z]*\s*x3/g, "Combo แมว 3 ใบ");
+            }
+            div.innerHTML = `<small style="color:gray;">${l.time || ''}</small> ${displayText}`;
+            logEl.appendChild(div);
+        });
 
-    // เลื่อนลงล่างสุดอัตโนมัติ
-    logEl.scrollTop = logEl.scrollHeight;
-}
-
-    // 3. จัดการปุ่ม Start สำหรับ Host
-    const isHost = roomState.hostClientId === clientId;
-    if (isHost && !roomState.started) {
-        startBtn.classList.remove("hidden");
-    } else {
-        startBtn.classList.add("hidden");
-    }
-
-    // 4. จัดการปุ่มจั่วไพ่
-const isMyTurn = roomState.players[roomState.turn].clientId === clientId;
-const drawBtn = document.getElementById("draw");
-
-if (!roomState.started) {
-    drawBtn.disabled = true;
-    drawBtn.innerText = "รอเริ่มเกม...";
-} else {
-    // กรณีเริ่มเกมแล้ว
-    drawBtn.disabled = !isMyTurn || !!roomState.pendingAction || !!roomState.pendingBomb;
-
-    if (isMyTurn) {
-        if (roomState.attackStack > 1) {
-            // 🚩 แสดงจำนวนครั้งที่ต้องจั่วบนปุ่ม
-            drawBtn.innerText = `🔥 จั่วไพ่ (${roomState.attackStack} ครั้ง)`;
-            drawBtn.style.background = "#d63031"; // สีแดงแจ้งเตือน
-            drawBtn.classList.add("pulse-animation");
-        } else {
-            drawBtn.innerText = "🃏 จั่วไพ่";
-            drawBtn.style.background = ""; // กลับเป็นสีปกติ
-            drawBtn.classList.remove("pulse-animation");
+        if (latestLocalLog) {
+            const pDiv = document.createElement("div");
+            pDiv.className = "log log-private";
+            pDiv.style.cssText = "background: rgba(52, 152, 219, 0.1); border-left: 3px solid #3498db; padding: 2px 8px; margin-top: 2px; border-radius: 4px;";
+            pDiv.innerHTML = `<small style="color:gray;">${latestLocalLog.time}</small> ${latestLocalLog.text}`;
+            logEl.appendChild(pDiv);
         }
-    } else {
-        // ไม่ใช่ตาของเรา
-        const activePlayerName = roomState.players[roomState.turn].name;
-        drawBtn.innerText = `ตาของ ${activePlayerName}`;
-        drawBtn.style.background = "";
-        drawBtn.classList.remove("pulse-animation");
+        logEl.scrollTop = logEl.scrollHeight;
     }
-}
-
-// อัปเดตจำนวนกองไพ่
-const deckCountEl = document.getElementById("deckCount");
-if (deckCountEl) {
-    deckEl.innerText = `🂠 กองไพ่เหลือ ${roomState.deck?.length || 0} ใบ`;
-}
-
-    // 5. วาดไพ่บนมือ
+    if (resetBtn) {
+        if (isHost) {
+            resetBtn.classList.remove("hidden"); // แสดงถ้าเป็น Host
+            resetBtn.onclick = () => {
+                if (confirm("ต้องการล้างเกมและเริ่มใหม่ใช่หรือไม่? (ทุกคนจะถูกรีเซ็ตไพ่)")) {
+                    socket.emit("resetGame", roomState.code);
+                }
+            };
+        } else {
+            resetBtn.classList.add("hidden"); // ซ่อนถ้าไม่ใช่ Host
+        }
+    }
+    const startBtn = document.getElementById("startGame");
+    if (startBtn) {
+        // เงื่อนไข: เป็น Host และเกมยังไม่เริ่ม
+        if (isHost && !roomState.started) {
+            startBtn.classList.remove("hidden");
+            startBtn.style.display = "block"; // บังคับแสดงผลกรณี CSS ขัดกัน
+        } else {
+            startBtn.classList.add("hidden");
+            startBtn.style.display = "none";
+    }
+    
+    // 5. จัดการปุ่มจั่วไพ่
+    const drawBtn = document.getElementById("draw");
+    if (drawBtn) {
+        if (!roomState.started) {
+            drawBtn.disabled = true;
+            drawBtn.innerText = "รอเริ่มเกม...";
+        } else {
+            drawBtn.disabled = !isMyTurn || !!roomState.pendingAction || !!roomState.pendingBomb;
+            if (isMyTurn) {
+                if (roomState.attackStack > 1) {
+                    drawBtn.innerText = `🔥 จั่วไพ่ (${roomState.attackStack} ครั้ง)`;
+                    drawBtn.style.background = "#d63031";
+                    drawBtn.classList.add("pulse-animation");
+                } else {
+                    drawBtn.innerText = "🃏 จั่วไพ่";
+                    drawBtn.style.background = "";
+                    drawBtn.classList.remove("pulse-animation");
+                }
+            } else {
+                const activePlayerName = roomState.players[roomState.turn].name;
+                drawBtn.innerText = `ตาของ ${activePlayerName}`;
+                drawBtn.style.background = "";
+            }
+        }
+    }
+    // 6. อัปเดตกองไพ่
+    const deckEl = document.getElementById("deckCount");
+    if (deckEl) deckEl.innerText = `🂠 กองไพ่เหลือ ${roomState.deck?.length || 0} ใบ`;
+    // 7. วาดไพ่บนมือ
     renderHand(roomState);
     validateSelection(roomState);
-    /* ===== BOMB LOGIC ===== */
-const nopeOverlay = document.getElementById("nopeOverlay");
+    // 8. ===== NOPE / TIMER LOGIC (จุดที่มีปัญหา) =====
+    const action = roomState.pendingAction;
+    const nopeOverlay = document.getElementById("nopeOverlay");
     const nopeBtn = document.getElementById("nopeBtn");
-    const timerBar = document.getElementById("timerBar");
     const nopeTitle = document.getElementById("nopeTitle");
-    const timerNumber = document.getElementById("timerNumber"); // ดึง Element เลขวินาที
-    
-
-    // เคลียร์ Interval เก่าเสมอเมื่อ State เปลี่ยน
-    if (nopeInterval) clearInterval(nopeInterval);
-
-    if (roomState.pendingAction) {
-        const actingPlayer = roomState.players.find(p => p.clientId === roomState.pendingAction.playerClientId);
-        const action = roomState.pendingAction;
+    // ล้าง Interval เดิมก่อนเสมอ
+    if (localTimerInterval) clearInterval(localTimerInterval);
+    if (action) {
+        // --- 8.1 การแสดงข้อความบน Overlay ---
+        const actingPlayer = roomState.players.find(p => p.clientId === action.playerClientId);
         const playerName = actingPlayer ? actingPlayer.name : "ใครบางคน";
+        let displayCardName = action.card;
+        const reqCard = action.requestedCard;
 
-        let displayCardName = roomState.pendingAction.card; 
-        const useCount = roomState.pendingAction.useCount; // จำนวนใบที่ใช้
-    const reqCard = roomState.pendingAction.requestedCard; // ชื่อการ์ดที่ขอ/กู้ชีพ
-
-if (displayCardName === "COMBO_2" || displayCardName.startsWith("แมว")) {
-        // ถ้าใน pendingAction มีข้อมูล useCount เป็น 2 (หรือเช็คตาม logic combo 2)
-        if (roomState.pendingAction.useCount === 2) {
-            displayCardName = "Combo 2 ใบ (สุ่มขโมย)";
-        } 
-        else if (roomState.pendingAction.useCount === 3) {
-            // Combo 3 ใบ: แสดงชื่อการ์ดที่ต้องการขโมย
-            displayCardName = `Combo 3 ใบ (ขโมย: ${reqCard || "???"})`;
+        if (displayCardName === "COMBO_2" || displayCardName.startsWith("แมว")) {
+            displayCardName = action.useCount === 3 ? `Combo 3 ใบ (ขโมย: ${reqCard || "???"})` : "Combo 2 ใบ (สุ่มขโมย)";
+        } else if (displayCardName === "COMBO_5") {
+            displayCardName = `Combo 5 ใบ (กู้ชีพ: ${reqCard || "???"})`;
         }
-    } 
-    else if (displayCardName === "COMBO_5") {
-        // Combo 5 ใบ: แสดงชื่อการ์ดที่ต้องการกู้ชีพ
-        displayCardName = `Combo 5 ใบ (กู้ชีพ: ${reqCard || "???"})`;
-    }
 
-    // 3. แสดงผลบน Overlay
-    if (roomState.pendingAction.noped) {
-        nopeTitle.innerHTML = `🚫 การ์ดของ <span style="color:#ffeaa7">${playerName}</span><br>ถูกระงับด้วย "ม่าย"!`;
-    } else {
-        nopeTitle.innerHTML = `🚨 <span style="color:#ffeaa7">${playerName}</span><br>กำลังใช้ "${displayCardName}"`;
-    }
-
-    nopeOverlay.classList.remove("hidden");
-        // ฟังก์ชันคำนวณและวาดหลอดเวลา
-        
-const updateTimer = () => {
-    const now = Date.now();
-    const timeLeft = action.endAt - now; 
-    
-    // 🚩 กำหนดเวลาสูงสุดที่ยอมให้แสดง (เช่น 5 วินาที)
-    const maxSeconds = 5; 
-    const totalDuration = action.duration || 5000; 
-
-    // 1. คำนวณวินาที และใช้ Math.min เพื่อไม่ให้เกิน 5 วิ
-    // ถึงแม้ timeLeft จะคำนวณได้ 50,000 (50 วิ) แต่มันจะถูกตัดเหลือแค่ 5 ครับ
-    let secondsContent = Math.ceil(timeLeft / 1000);
-    secondsContent = Math.max(0, Math.min(secondsContent, maxSeconds)); 
-    
-    timerNumber.innerText = secondsContent;
-
-    // 2. คำนวณหลอดเวลา (Progress Bar)
-    // ใช้ Math.min เพื่อให้หลอดเริ่มที่ 100% เสมอ ไม่ยาวทะลุจอ
-    let percent = (timeLeft / totalDuration) * 100;
-    percent = Math.max(0, Math.min(percent, 100)); 
-    
-    timerBar.style.width = percent + "%";
-
-    // 3. การแสดงผลสีและการสั่น (เหมือนเดิม)
-    if (secondsContent <= 2) {
-        timerNumber.style.color = "#ff4757";
-        if (!timerNumber.classList.contains("pulse-fast")) {
-            timerNumber.classList.add("pulse-fast");
+        if (action.noped) {
+            nopeTitle.innerHTML = `🚫 การ์ดของ <span style="color:#ffeaa7">${playerName}</span><br>ถูกระงับด้วย "ม่าย"!`;
+        } else {
+            nopeTitle.innerHTML = `🚨 <span style="color:#ffeaa7">${playerName}</span><br>กำลังใช้ "${displayCardName}"`;
         }
-    } else {
-        timerNumber.style.color = "white";
-        timerNumber.classList.remove("pulse-fast");
-    }
 
-    if (timeLeft <= 0) {
-        clearInterval(nopeInterval);
-        const nopeOverlay = document.getElementById("nopeOverlay"); // ตรวจสอบ ID ให้ตรง
-        if (nopeOverlay) nopeOverlay.classList.add("hidden");
-    nopeBtn.disabled = false;
-    nopeBtn.innerText = "❌ ม่าย (NOPE)";
-}
-}
-        // เรียกทำงานทันที 1 ครั้ง และตั้ง Loop ให้ทำทุก 50ms เพื่อความลื่น
-        updateTimer();
-        nopeInterval = setInterval(updateTimer, 50);
-
-        // เช็คสิทธิ์การกด Nope
-        const me = roomState.players.find(p => p.clientId === clientId);
+        // --- 8.2 การจัดการตัวนับเวลา (Server Time) ---
+        if (action.remaining > 0) {
+            nopeOverlay.classList.remove("hidden");
+            localTimeLeft = action.remaining;
+            
+            localTimerInterval = setInterval(() => {
+                localTimeLeft -= 100;
+                if (localTimeLeft <= 0) {
+                    localTimeLeft = 0;
+                    clearInterval(localTimerInterval);
+                    nopeOverlay.classList.add("hidden");
+                }
+                renderTimerUI(localTimeLeft, action.duration || 5000);
+            }, 100);
+            renderTimerUI(localTimeLeft, action.duration || 5000);
+        } else {
+            nopeOverlay.classList.add("hidden");
+        }
+        // --- 8.3 การแสดงปุ่ม Nope ---
         const hasNope = me?.hand.includes("ม่าย");
-        const isNotActor = action.playerClientId !== clientId;
-
-        if (hasNope && isNotActor && me.alive) {
+        if (hasNope && me.alive) {
             nopeBtn.classList.remove("hidden");
+            nopeBtn.disabled = false;
+            nopeBtn.innerText = "❌ ม่าย (NOPE)";
         } else {
             nopeBtn.classList.add("hidden");
         }
-
     } else {
-        // ถ้าไม่มี Action ค้างอยู่ ให้ซ่อน Overlay และหยุดนับ
+        // ถ้าไม่มี pendingAction เลย ให้ซ่อนทั้งหมด
         nopeOverlay.classList.add("hidden");
         nopeBtn.classList.add("hidden");
-        if (nopeInterval) clearInterval(nopeInterval);
     }
-renderHand(lastState); // ส่ง lastState ที่ sort แล้วเข้าไปวาด
-    validateSelection(lastState);
+}
 });
-
-
 // 1. เมื่อจั่วเจอระเบิด และต้องกด "แก้ระเบิด"
 /* ===== 2. BOMB LOGIC (แยกออกมาข้างนอก) ===== */
 socket.on("showDefusePrompt", () => {
@@ -333,18 +261,15 @@ socket.on("showDefusePrompt", () => {
         </div>`;
     document.body.appendChild(overlay);
 });
-
 window.useDefuse = () => {
     socket.emit("defuseBomb", room);
     const modal = document.getElementById("defuseModal");
     if (modal) modal.remove();
 };
-
 socket.on("chooseBombPosition", (maxPosition) => {
     let pos = prompt(`🛡️ แก้สำเร็จ! วางคืนตรงไหน? (0-${maxPosition})`, "0");
     socket.emit("placeBomb", { code: room, position: parseInt(pos) || 0 });
 });
-
 /* ===== ดูอนาคต (See the Future) ===== */
 socket.on("futureCards", (cards) => {
     const overlay = document.createElement("div");
@@ -367,7 +292,6 @@ socket.on("futureCards", (cards) => {
     `;
     document.body.appendChild(overlay);
 });
-
 /* ===== เปลี่ยนอนาคต (Alter the Future) ===== */
 let tempFutureOrder = [];
 
@@ -375,7 +299,6 @@ socket.on("reorderFuture", (cards) => {
     tempFutureOrder = [...cards];
     showAlterModal();
 });
-
 /* ===== GAME OVER LOGIC ===== */
 socket.on("gameOver", (data) => {
     // สร้าง Overlay แจ้งผู้ชนะ
@@ -396,7 +319,6 @@ socket.on("gameOver", (data) => {
     document.getElementById("draw").disabled = true;
     document.getElementById("confirmPlay").classList.add("hidden");
 });
-
 function showAlterModal() {
     const existing = document.getElementById("alterModal");
     if (existing) existing.remove();
@@ -405,25 +327,73 @@ function showAlterModal() {
     overlay.className = "modal-overlay";
     overlay.id = "alterModal";
 
-    // ตรวจสอบจำนวนการ์ดจริงที่มีให้เปลี่ยน
     const cardCount = tempFutureOrder.length;
 
+    // สร้าง HTML สำหรับแต่ละการ์ด
     let cardsHtml = tempFutureOrder.map((c, i) => `
-        <div style="background:#444; margin:5px; padding:10px; border-radius:10px; display:flex; justify-content:space-between; align-items:center;">
-            <span>${c}</span>
-            <div>
-                <button onclick="window.moveFuture(${i}, -1)" ${i === 0 ? 'disabled' : ''}>⬆️</button>
-                <button onclick="window.moveFuture(${i}, 1)" ${i === cardCount - 1 ? 'disabled' : ''}>⬇️</button>
+        <div style="
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between; 
+            background: #333; 
+            margin-bottom: 8px; 
+            padding: 10px; 
+            border-radius: 10px; 
+            border: 1px solid #555;
+            ${i === 0 ? 'border-left: 5px solid #2ed573;' : ''} /* เน้นใบแรกที่จะจั่ว */
+        ">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="font-weight: bold; color: ${i === 0 ? '#2ed573' : '#aaa'}; width: 20px;">
+                    ${i + 1}.
+                </div>
+                <img src="/assets/cards/${c}.png" 
+                     onerror="this.src='/assets/cards/default.png'"
+                     style="height: 60px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.5);">
+                <div>
+                    <div style="font-weight: bold;">${c}</div>
+                    ${i === 0 ? '<div style="font-size: 10px; color: #2ed573;">(จั่วใบแรก)</div>' : ''}
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 5px;">
+                <button onclick="window.moveFuture(${i}, -1)" 
+                    style="
+                        background: #444; color: white; border: none; 
+                        padding: 8px 12px; border-radius: 5px; cursor: pointer;
+                        opacity: ${i === 0 ? '0.3' : '1'};
+                    " 
+                    ${i === 0 ? 'disabled' : ''}>
+                    ⬆️
+                </button>
+                <button onclick="window.moveFuture(${i}, 1)" 
+                    style="
+                        background: #444; color: white; border: none; 
+                        padding: 8px 12px; border-radius: 5px; cursor: pointer;
+                        opacity: ${i === cardCount - 1 ? '0.3' : '1'};
+                    " 
+                    ${i === cardCount - 1 ? 'disabled' : ''}>
+                    ⬇️
+                </button>
             </div>
         </div>
     `).join("");
 
     overlay.innerHTML = `
-        <div class="bomb-modal" style="width:300px;">
-            <h2>🌀 เปลี่ยนอนาคต</h2>
-            <p><small>${cardCount < 3 ? `กองไพ่เหลือเพียง ${cardCount} ใบสุดท้าย` : 'บนสุดคือใบที่จะถูกจั่ว'}</small></p>
-            <div style="text-align:left; margin-bottom:15px;">${cardsHtml}</div>
-            <button class="defuse-btn" onclick="window.submitAlter()">ยืนยันลำดับนี้</button>
+        <div class="bomb-modal" style="width: 90%; max-width: 450px; text-align: left;">
+            <h2 style="text-align: center; margin-bottom: 5px;">🌀 เปลี่ยนอนาคต</h2>
+            <p style="text-align: center; color: #bbb; font-size: 0.9rem; margin-bottom: 15px;">
+                เรียงลำดับไพ่ <strong>บนสุด</strong> คือใบที่จะถูกจั่วเป็นใบแรก
+            </p>
+            
+            <div style="max-height: 60vh; overflow-y: auto; padding-right: 5px;">
+                ${cardsHtml}
+            </div>
+
+            <div style="margin-top: 20px; text-align: center;">
+                <button class="defuse-btn" onclick="window.submitAlter()" style="width: 100%;">
+                    ✅ ยืนยันลำดับนี้
+                </button>
+            </div>
         </div>
     `;
     document.body.appendChild(overlay);
@@ -443,7 +413,6 @@ window.moveFuture = (index, direction) => {
     
     showAlterModal(); // วาดหน้าต่างใหม่
 };
-
 window.submitAlter = () => {
     socket.emit("submitFutureOrder", { code: room, order: tempFutureOrder });
     const modal = document.getElementById("alterModal");
@@ -451,7 +420,6 @@ window.submitAlter = () => {
 };
 
 /* ===== FUNCTIONS ===== */
-
 function renderHand(roomState) {
     const me = roomState.players.find(p => p.clientId === clientId);
     if (!me || !me.alive) {
@@ -481,10 +449,6 @@ function renderHand(roomState) {
         handEl.appendChild(btn);
     });
 }
-
-
-/* ===== เลือกเป้าหมาย (Target Picker) ===== */
-
 // ฟังก์ชันส่งคำสั่งไป Server (ต้องมี window. นำหน้าเพื่อให้ HTML เรียกได้)
 window.showDiscardPicker = (pile, selectedCardsIdx) => {
     const currentPile = lastState ? lastState.discardPile : pile;
@@ -505,9 +469,7 @@ window.showDiscardPicker = (pile, selectedCardsIdx) => {
         backgroundColor: 'rgba(0,0,0,0.85)', zIndex: '10000',
         display: 'flex', alignItems: 'center', justifyContent: 'center'
     });
-
     const uniqueCards = [...new Set(currentPile)];
-
     modal.innerHTML = `
         <div class="modal-content" style="background:#222; padding:20px; border-radius:15px; width:90%; max-width:400px; max-height:80vh; display:flex; flex-direction:column;">
             <h3 style="margin:0 0 15px 0; color:#2ed573; text-align:center;">เลือกการ์ด 1 ใบจากกองทิ้ง</h3>
@@ -560,7 +522,6 @@ window.confirmFiveCombo = (requestedCard) => {
     window.tempCardsToUse = null;
     renderHand(lastState);
 };
-
 /* ===== ACTION HANDLERS ===== */
 // ประกาศตัวแปรให้ชัดเจนก่อนใช้งาน
 const confirmPlay = document.getElementById("confirmPlay")
@@ -631,7 +592,6 @@ function validateSelection(roomState) {
         btn.classList.add("hidden");
     }
 }
-
 // 2. เมื่อกดปุ่มยืนยัน
 elements.confirmPlay.onclick = () => {
     if (!lastState) return;
@@ -759,7 +719,6 @@ function updatePlayersUI(roomState) {
             </div>
             ${isCurrentTurn && p.alive ? '<div class="turn-indicator">กำลังเล่น...</div>' : ''}
         `;
-        
         playersDiv.appendChild(pEl);
     });
 }
@@ -771,11 +730,9 @@ window.confirmPlayWithTarget = (card, targetId, useCount) => {
         targetClientId: targetId, 
         useCount: useCount 
     });
-    
     // ปิด Modal เมื่อส่งคำสั่งเสร็จ
     const modal = document.getElementById("targetModal");
     if (modal) modal.remove();
-    
     // ล้างสถานะการเลือกไพ่บนมือ
     selectedCardsIdx = [];
     renderHand(lastState);
@@ -817,7 +774,6 @@ window.openCardTypePicker = (targetClientId, cardsUsed) => {
     `;
     document.body.appendChild(overlay);
 };
-
 window.executeThreeCombo = (cardName, targetId, reqCard) => {
     // ส่งข้อมูลไปที่ Server
     socket.emit("playCard", { 
@@ -846,56 +802,75 @@ document.getElementById("nopeBtn").onclick = () => {
         socket.emit("playNope", room);
     }
 };
-
-document.getElementById("sortBtn").onclick = () => {
-    console.log("Sort button clicked"); // เพื่อ Check ใน Console ว่าปุ่มทำงานไหม
-    if (!lastState) return;
-
-    const me = lastState.players.find(p => p.clientId === clientId);
-    if (!me || !me.hand) return;
-
-    // เรียงไพ่ในตัวแปรโลคอล
-    me.hand.sort((a, b) => a.localeCompare(b, 'th'));
-
-    // ล้างสถานะการเลือก (ป้องกันการจำ index ผิดหลังจากสลับตำแหน่ง)
-    selectedCardsIdx = [];
-
-    // วาดใหม่ทันที
-    renderHand(lastState);
-    validateSelection(lastState);
-};
 function addLocalLog(message, kind = 'info') {
     if (!logEl) return;
     
     const now = new Date();
     const timeStr = now.getHours().toString().padStart(2, '0') + ":" + 
                     now.getMinutes().toString().padStart(2, '0');
-
     const div = document.createElement("div");
     // ใช้ class 'log-private' เพื่อแต่งสีให้ต่างจาก log กลาง
     div.className = `log log-${kind} log-private`; 
     div.innerHTML = `<small style="color:gray;">${timeStr}</small> <span style="color:#74b9ff;">[เฉพาะคุณ]</span> ${message}`;
-    
     logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
 }
 function addPrivateLog(cardName) {
     const logEl = document.getElementById("logEl") || document.getElementById("gameLog");
     if (!logEl) return;
-
     const div = document.createElement("div");
     // ใช้ Class 'log-system' หรือสร้าง Class ใหม่ชื่อ 'log-private'
     div.className = "log log-private"; 
-    
+   
     // ใส่เนื้อหา Log
     div.innerHTML = `
         <small style="color:#aaa;">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</small> 
         <span style="color:#74b9ff; font-weight:bold;"> [จั่วไพ่]</span> 
         คุณได้รับ : <strong>${cardName}</strong>
     `;
-
-    logEl.appendChild(div);
-    
+    logEl.appendChild(div);  
     // สั่งให้ Log เลื่อนลงไปล่างสุดเสมอ
     logEl.scrollTop = logEl.scrollHeight;
+}
+// ฟังก์ชันสำหรับวาดหลอดเวลาและตัวเลขวินาที
+function renderTimerUI(timeLeft, totalDuration) {
+    const timerNumber = document.getElementById("timerNumber");
+    const timerBar = document.getElementById("timerBar");
+    if (!timerNumber || !timerBar) return; // กัน Error ถ้าหา Element ไม่เจอ
+    // 1. แสดงตัวเลขวินาที (ใช้ Math.ceil เพื่อปัดเศษขึ้นเหมือนนาฬิกาทั่วไป)
+    let seconds = Math.ceil(timeLeft / 1000);
+    // จำกัดเพดานไว้ที่ 5 วินาทีตามกฎเกม
+    timerNumber.innerText = Math.max(0, Math.min(seconds, 5));
+    // 2. คำนวณความกว้างของหลอด Progress Bar (%)
+    let percent = (timeLeft / totalDuration) * 100;
+    // บังคับให้อยู่ในช่วง 0 - 100%
+    timerBar.style.width = Math.max(0, Math.min(percent, 100)) + "%";
+    // 3. เพิ่มลูกเล่นเปลี่ยนสีเมื่อเวลาใกล้หมด (น้อยกว่า 2 วินาที)
+    if (seconds <= 2) {
+        timerNumber.style.color = "#ff4757"; // สีแดง
+    } else {
+        timerNumber.style.color = "white";
+    }
+}
+function kickPlayer(targetId) {
+    if (confirm("คุณแน่ใจใช่ไหมที่จะเตะผู้เล่นคนนี้ออก?")) {
+        socket.emit("kickPlayer", { code: lastState.code, targetClientId: targetId });
+    }
+}
+const realStartBtn = document.getElementById("startGame");
+
+if (realStartBtn) {
+    realStartBtn.onclick = () => {
+        // เช็คจำนวนคนก่อนกด (ทางฝั่ง Client)
+        if (lastState && lastState.players.length < 2) {
+            alert("ต้องมีผู้เล่นอย่างน้อย 2 คนครับ");
+            return;
+        }
+
+        if (room) {
+            console.log("Host ส่งคำสั่งเริ่มเกม:", room);
+            // ส่งแค่ room code ไป (Server จะเช็ค socket.id ที่ส่งมาเอง)
+            socket.emit("startGame", room);
+        }
+    };
 }
