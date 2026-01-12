@@ -78,6 +78,7 @@ const DECKS = {
 io.on("connection", socket => {
     socket.on("createRoom", ({ name, clientId }) => {
         if (!name || !clientId) return;
+        socket.id_clientId_map_attribute = clientId;
         const code = genCode();
         rooms[code] = {
             code, hostClientId: clientId, started: false, turn: 0, attackStack: 0,
@@ -93,6 +94,7 @@ io.on("connection", socket => {
     socket.on("joinRoom", ({ code, name, clientId }) => {
         const room = rooms[code];
         if (!room || !clientId) return;
+        socket.id_clientId_map_attribute = clientId;
         let player = room.players.find(p => p.clientId === clientId);
         if (player) {
             player.socketId = socket.id;
@@ -101,14 +103,27 @@ io.on("connection", socket => {
         }
         socket.join(code);
         socket.emit("roomJoined", { code });
-        io.to(code).emit("state", room);
+        emitState(io, code, room);
     });
 
     socket.on("startGame", code => {
-        const room = rooms[code];
-        if (!room || room.started) return;
-        const hostPlayer = room.players.find(p => p.clientId === room.hostClientId);
-        if (!hostPlayer || hostPlayer.socketId !== socket.id) return;
+    const room = rooms[code];
+    if (!room || room.started) return;
+
+    // 🚩 เปลี่ยนการเช็คสิทธิ์ Host จาก socket.id เป็น clientId
+    // โดยใช้ Map หรือคุณสมบัติที่เก็บ clientId ไว้ตอนเชื่อมต่อ
+    if (room.hostClientId !== socket.id_clientId_map_attribute) { 
+        // ถ้าคุณเก็บ clientId ไว้ใน socket ตอน joinRoom ให้ใช้ค่านั้นเทียบ
+        // หรือถ้าไม่มี ให้รับ clientId แนบมากับ emit ด้วย
+        console.log("สิทธิ์การเริ่มเกมไม่ถูกต้อง");
+        return;
+    }
+
+    if (room.players.length < 2) {
+        pushLog(room, "system", "❌ ต้องมีผู้เล่นอย่างน้อย 2 คนเพื่อเริ่มเกม");
+        emitState(io, code, room);
+        return;
+    }
 
         room.deck = shuffle(selectDeckByPlayerCount(room.players.length));
         room.players.forEach(p => {
@@ -137,7 +152,7 @@ io.on("connection", socket => {
 
     room.started = true;
     pushLog(room, "system", `🎮 เริ่มเกม (มีระเบิดทั้งหมด ${bombCountNeeded} ใบ)`);
-        io.to(code).emit("state", room);
+        emitState(io, code, room);
     });
 
 socket.on("drawCard", code => {
@@ -191,7 +206,7 @@ socket.on("drawCard", code => {
         }
     }
     
-    io.to(code).emit("state", room);
+    emitState(io, code, room);
 });
 socket.on("defuseBomb", (code) => {
     const room = rooms[code];
@@ -211,7 +226,7 @@ socket.on("defuseBomb", (code) => {
         // ส่งคำสั่งให้ผู้เล่นเลือกที่วางระเบิดคืนกอง
         socket.emit("chooseBombPosition", room.deck.length);
         
-        io.to(code).emit("state", room);
+        emitState(io, code, room);
     }
 });
 
@@ -248,7 +263,7 @@ socket.on("placeBomb", (data) => {
                 room.turn = nextAlive(room, room.turn);
                 pushLog(room, "system", `🛡️ ${player.name} วางระเบิดคืนแล้ว จบเทิร์น`);
             }
-        io.to(code).emit("state", room);
+        emitState(io, code, room);
 });
     
     
@@ -299,7 +314,7 @@ socket.on("playCard", ({ code, card, targetClientId, useCount, requestedCard }) 
 
     const logTitle = needed > 1 ? `Combo แมว x${needed}` : `การ์ด [${card}]`;
 const logKind = needed > 1 ? "combo" : card; // ใช้ชื่อการ์ดเป็น kind เลย เช่น "attack", "shuffle"
-    io.to(code).emit("state", room);
+    emitState(io, code, room);
     room.nopeTimer = setTimeout(() => resolvePendingAction(code), 5000);
 });
 
@@ -316,18 +331,11 @@ const logKind = needed > 1 ? "combo" : card; // ใช้ชื่อการ�
         room.discardPile.push("ม่าย");
 
       // สลับสถานะ: true = โดนหยุด, false = ทำงานปกติ
-        room.pendingAction.noped = !room.pendingAction.noped;
-        room.pendingAction.endAt = Date.now() + 5000;
+    room.pendingAction.noped = !room.pendingAction.noped;
+    room.pendingAction.endAt = Date.now() + 5000; // Reset เวลาใหม่
 
-        // ✅ ล้าง Timer เก่า
-        if (room.nopeTimer) {
-            clearTimeout(room.nopeTimer);
-        }
-
-        // ✅ ตั้ง Timer ใหม่
-        room.nopeTimer = setTimeout(() => {
-            resolvePendingAction(code);
-        }, 5000);
+    if (room.nopeTimer) clearTimeout(room.nopeTimer);
+    room.nopeTimer = setTimeout(() => resolvePendingAction(code), 5000);
 
         pushLog(room, "nope", `🔥 ${player.name} ใช้ "ม่าย"!`);
         
@@ -368,9 +376,10 @@ const logKind = needed > 1 ? "combo" : card; // ใช้ชื่อการ�
     };
 
     pushLog(room, "system", `⏳ ${player.name} จ่าย 5 ใบไม่ซ้ำเพื่อกู้ชีพ "${requestedCard}"`);
-    io.to(code).emit("state", room);
+    emitState(io, code, room);
     room.nopeTimer = setTimeout(() => resolvePendingAction(code), 5000);
 });
+
 socket.on("submitFutureOrder", ({ code, order }) => {
     const room = rooms[code];
     if (!room || !room.pendingAction) return;
@@ -388,10 +397,70 @@ socket.on("submitFutureOrder", ({ code, order }) => {
         
         pushLog(room, "system", "🌀 อนาคตถูกเปลี่ยนแปลงแล้ว...");
         room.pendingAction = null;
-        io.to(code).emit("state", room);
+        emitState(io, code, room);
     }
 });
+// --- เพิ่มไว้ใน io.on("connection", socket => { ... }) ---
 
+// 🚩 1. เตะผู้เล่น
+socket.on("kickPlayer", ({ code, targetClientId }) => {
+    const room = rooms[code];
+    if (!room || room.hostClientId !== socket.id_clientId_map_attribute) { 
+        // ตรวจสอบว่าเป็น Host จริงไหม (เปรียบเทียบจาก room.hostClientId)
+        const host = room.players.find(p => p.clientId === room.hostClientId);
+        if (!host || host.socketId !== socket.id) return;
+    }
+
+    const playerIndex = room.players.findIndex(p => p.clientId === targetClientId);
+    if (playerIndex === -1) return;
+
+    const kickedPlayer = room.players[playerIndex];
+
+    if (room.started && kickedPlayer.alive) {
+        // 🃏 คืนการ์ดในมือลงกองแบบสุ่ม (ยกเว้นแก้ระเบิด)
+        kickedPlayer.hand.forEach(card => {
+            if (card !== "แก้ระเบิด") {
+                const randomIndex = Math.floor(Math.random() * room.deck.length);
+                room.deck.splice(randomIndex, 0, card);
+            }
+        });
+
+        // 💣 เพิ่มระเบิด 1 ใบลงกอง (เพราะจำนวนผู้เล่นลดลง แต่ระเบิดต้องเท่าเดิมหรือเพิ่มความโหด)
+        const bombPos = Math.floor(Math.random() * room.deck.length);
+        room.deck.splice(bombPos, 0, "ระเบิด");
+        
+        pushLog(room, "system", `🚫 ${kickedPlayer.name} ถูกเตะออก! (คืนไพ่ลงกองและเพิ่มระเบิด 1 ใบ)`);
+    } else {
+        pushLog(room, "system", `🚫 ${kickedPlayer.name} ถูกเตะออกจากห้อง`);
+    }
+
+    // ลบผู้เล่นออกจาก Array
+    room.players.splice(playerIndex, 1);
+
+    // ตรวจสอบคนชนะใหม่เผื่อเหลือคนเดียว
+    if (room.started) checkWinner(room);
+
+    emitState(io, code, room);
+});
+
+// 🔄 2. Reset เกม
+socket.on("resetGame", (code) => {
+    const room = rooms[code];
+    const host = room.players.find(p => p.clientId === room.hostClientId);
+    if (!host || host.socketId !== socket.id) return;
+
+    room.started = false;
+    room.deck = [];
+    room.discardPile = [];
+    room.attackStack = 0;
+    room.turn = 0;
+    room.pendingAction = null;
+    room.pendingBomb = null;
+    room.players.forEach(p => { p.hand = []; p.alive = true; });
+
+    pushLog(room, "system", "🔄 Host ได้ทำการรีเซ็ตห้องใหม่");
+    emitState(io, code, room);
+});
 
 }); //ปิด Connection
 
@@ -405,7 +474,7 @@ function resolvePendingAction(code) {
         pushLog(room, "system", `🚫 ผลของการ์ด ${room.pendingAction.card} ถูกยกเลิกโดย "ม่าย"`);
         room.pendingAction = null;
         room.nopeTimer = null;
-        io.to(code).emit("state", room);
+        emitState(io, code, room);
         return; // จบการทำงาน ไม่เข้า switch(card) ด้านล่าง
     }
 
@@ -527,29 +596,42 @@ case "แมวมันฝรั่ง": {
 }
     }
     room.pendingAction = null;
-    io.to(code).emit("state", room);
+    emitState(io, code, room);
 }
 // สร้างฟังก์ชันช่วยส่ง State ที่จะลบข้อมูลที่ไม่ได้ใช้และเสี่ยงต่อการวนลูปออก
 function emitState(io, code, room) {
     if (!room) return;
-    
-    // สร้าง Object ใหม่เพื่อไม่ให้กระทบข้อมูลจริงในหน่วยความจำ
-    const stateToSend = { ...room };
-    
-    // ลบตัวแปรที่ทำให้เกิด Circular Reference หรือข้อมูลที่หนักเครื่องเกินไป
-    delete stateToSend.nopeTimer; // ลบ Timer ออก
-    
-    // หากมีการเก็บข้อมูล socket ไว้ใน player ให้ลบออกด้วย (ถ้ามี)
-    stateToSend.players = room.players.map(p => {
-        const temp = { ...p };
-        // delete temp.socket; // ถ้าคุณมีการเก็บ socket object ไว้ใน player ให้ลบออก
-        return temp;
-    });
 
+    // 1. สร้าง Object ใหม่สำหรับส่งออกโดยเฉพาะ (Shallow Copy)
+    // วิธีนี้จะช่วยเลี่ยงปัญหา Circular Structure จาก Timeout Object ได้ดีกว่า JSON.parse
+    const { nopeTimer, ...restOfRoom } = room; 
+    
+    // 2. Clone ข้อมูลที่เหลือ (Optional: ถ้าต้องการความชัวร์ว่าไม่กระทบข้อมูลจริง)
+    // แต่ปกติใช้ restOfRoom ก็เพียงพอสำหรับการ emit แล้วครับ
+    const stateToSend = { ...restOfRoom };
+
+    // 3. คำนวณเวลาที่เหลือ ณ วินาทีที่ส่ง
+    if (stateToSend.pendingAction && stateToSend.pendingAction.endAt) {
+        stateToSend.pendingAction.remaining = Math.max(0, stateToSend.pendingAction.endAt - Date.now());
+    }
+
+    // 4. ส่งข้อมูล
     io.to(code).emit("state", stateToSend);
 }
 
 // เวลาจะส่งข้อมูล ให้เรียกใช้ emitState(io, code, room) แทน io.to(code).emit(...)
+function renderTimerUI(timeLeft, totalDuration) {
+    const timerNumber = document.getElementById("timerNumber");
+    const timerBar = document.getElementById("timerBar");
+    
+    // แสดงวินาที (ใช้ Math.min กันเหนียวไว้ที่ 5 วิ)
+    let seconds = Math.ceil(timeLeft / 1000);
+    timerNumber.innerText = Math.min(seconds, 5);
+
+    // คำนวณหลอด %
+    let percent = (timeLeft / totalDuration) * 100;
+    timerBar.style.width = Math.max(0, Math.min(percent, 100)) + "%";
+}
 
 function handleAfterDraw(room, player) {
     if (room.attackStack > 0) {
@@ -561,6 +643,7 @@ function handleAfterDraw(room, player) {
         room.turn = nextAlive(room, room.turn);
     }
 }
+
 server.listen(PORT, '0.0.0.0', () => { // ใส่ '0.0.0.0' เพื่อให้รับการเชื่อมต่อจากภายนอกได้ดีขึ้น
     console.log(`เซิร์ฟเวอร์รันที่พอร์ต ${PORT}`);
 });
