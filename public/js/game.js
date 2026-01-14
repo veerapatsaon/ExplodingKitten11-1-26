@@ -319,6 +319,12 @@ socket.on("gameOver", (data) => {
     document.getElementById("draw").disabled = true;
     document.getElementById("confirmPlay").classList.add("hidden");
 });
+
+socket.on("kicked", () => {
+    alert("คุณถูก Host เตะออกจากห้อง!");
+    location.href = "/"; // กลับหน้าหลัก
+});
+
 function showAlterModal() {
     const existing = document.getElementById("alterModal");
     if (existing) existing.remove();
